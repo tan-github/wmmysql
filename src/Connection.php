@@ -107,7 +107,7 @@ class Connection
      *
      * @var bool
      */
-    protected $order_asc = null;
+    protected $order_asc = true;
     /**
      * SELECT 多少记录
      *
@@ -1020,7 +1020,6 @@ class Connection
      */
     public function orderBy(array $cols)
     {
-        $this->order_asc = null;
         return $this->addOrderBy($cols);
     }
 
@@ -1213,15 +1212,12 @@ class Connection
         if (!$this->order_by) {
             return '';
         }
-        
-        $r = ' ORDER BY' . $this->indentCsv($this->order_by);
-        if(isset($this->order_asc)) {
-            $r .= ($this->order_asc)? ' ASC' : ' DESC';
+
+        if ($this->order_asc) {
+            return ' ORDER BY' . $this->indentCsv($this->order_by) . ' ASC';
         } else {
-            // depend on devloper if $this->order_asc is not set.
-            // devloper can call function orderBy() to set $this->order_by.
+            return ' ORDER BY' . $this->indentCsv($this->order_by) . ' DESC';
         }
-        return $r;
     }
 
     /**
@@ -1689,16 +1685,36 @@ class Connection
      * @param string $db_name
      * @param string $charset
      */
-    public function __construct($host, $port, $user, $password, $db_name, $charset = 'utf8')
+//    public function __construct($host, $port, $user, $password, $db_name, $charset = 'utf8')
+//    {
+//        $this->settings = array(
+//            'host'     => $host,
+//            'port'     => $port,
+//            'user'     => $user,
+//            'password' => $password,
+//            'dbname'   => $db_name,
+//            'charset'  => $charset,
+//        );
+//        $this->connect();
+//    }
+
+    public $dsn;
+    public $username;
+    public $password;
+    public $db_name;
+    public $charset = 'utf8';
+
+    public function __construct($params = array())
     {
-        $this->settings = array(
-            'host'     => $host,
-            'port'     => $port,
-            'user'     => $user,
-            'password' => $password,
-            'dbname'   => $db_name,
-            'charset'  => $charset,
-        );
+        foreach ($params as $key => $param) {
+            unset($params[$key]);
+            if ($key == 'class') {
+                continue;
+            }
+
+            $this->$key = $param;
+        }
+
         $this->connect();
     }
 
@@ -1707,12 +1723,11 @@ class Connection
      */
     protected function connect()
     {
-        $dsn       = 'mysql:dbname=' . $this->settings["dbname"] . ';host=' .
-            $this->settings["host"] . ';port=' . $this->settings['port'];
-        $this->pdo = new PDO($dsn, $this->settings["user"], $this->settings["password"],
+//        $dsn       = 'mysql:dbname=' . $this->settings["dbname"] . ';host=' .
+//            $this->settings["host"] . ';port=' . $this->settings['port'];
+        $this->pdo = new PDO($this->dsn, $this->username, $this->password,
             array(
-                PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES ' . (!empty($this->settings['charset']) ?
-                        $this->settings['charset'] : 'utf8')
+                PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES ' . $this->charset
             ));
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $this->pdo->setAttribute(PDO::ATTR_STRINGIFY_FETCHES, false);
@@ -1740,11 +1755,12 @@ class Connection
             if (is_null($this->pdo)) { 
                 $this->connect(); 
             }
-            $this->sQuery = @$this->pdo->prepare($query);
+            @$this->sQuery = $this->pdo->prepare($query);
             $this->bindMore($parameters);
             if (!empty($this->parameters)) {
                 foreach ($this->parameters as $param) {
-                    $this->sQuery->bindParam($param[0], $param[1]);
+                    $parameters = explode("\x7F", $param);
+                    $this->sQuery->bindParam($parameters[0], $parameters[1]);
                 }
             }
             $this->success = $this->sQuery->execute();
@@ -1752,14 +1768,29 @@ class Connection
             // 服务端断开时重连一次
             if ($e->errorInfo[1] == 2006 || $e->errorInfo[1] == 2013) {
                 $this->closeConnection();
-                $this->connect();
+
+                //创建pdo超时连接3次
+                foreach (array(1, 2, 3) as $v) {
+                    try {
+                        $this->connect();
+                    } catch (PDOException $ex) {
+                        if ($v == 3) {
+                            throw $ex;
+                        }elseif($ex->errorInfo[1] == 2002){
+                            usleep(100000);//0.1s
+                            continue;
+                        }
+                    }
+                    break;
+                }
 
                 try {
                     $this->sQuery = $this->pdo->prepare($query);
                     $this->bindMore($parameters);
                     if (!empty($this->parameters)) {
                         foreach ($this->parameters as $param) {
-                            $this->sQuery->bindParam($param[0], $param[1]);
+                            $parameters = explode("\x7F", $param);
+                            $this->sQuery->bindParam($parameters[0], $parameters[1]);
                         }
                     }
                     $this->success = $this->sQuery->execute();
@@ -1787,9 +1818,9 @@ class Connection
     public function bind($para, $value)
     {
         if (is_string($para)) {
-            $this->parameters[sizeof($this->parameters)] = array(":" . $para, $value);
+            $this->parameters[sizeof($this->parameters)] = ":" . $para . "\x7F" . $value;
         } else {
-            $this->parameters[sizeof($this->parameters)] = array($para, $value);
+            $this->parameters[sizeof($this->parameters)] = $para . "\x7F" . $value;
         }
     }
 
@@ -1820,14 +1851,7 @@ class Connection
     {
         $query = trim($query);
         if (empty($query)) {
-            
-            $union = '';
-            if (! empty($this->union)) {
-                $union = implode(PHP_EOL, $this->union) . PHP_EOL;
-            }
-
-            $query = $union . $this->build();
-            
+            $query = $this->build();
             if (!$params) {
                 $params = $this->getBindValues();
             }
@@ -1843,7 +1867,9 @@ class Connection
         $statement = strtolower(trim($rawStatement[0]));
         if ($statement === 'select' || $statement === 'show') {
             return $this->sQuery->fetchAll($fetchmode);
-        } elseif ($statement === 'update' || $statement === 'delete' || $statement === 'replace') {
+        } elseif ($statement === 'update' || $statement === 'delete') {
+            return $this->sQuery->rowCount();
+        } elseif ($statement === 'replace') {
             return $this->sQuery->rowCount();
         } elseif ($statement === 'insert') {
             if ($this->sQuery->rowCount() > 0) {
@@ -1867,14 +1893,7 @@ class Connection
     {
         $query = trim($query);
         if (empty($query)) {
-            
-            $union = '';
-            if (! empty($this->union)) {
-                $union = implode(PHP_EOL, $this->union) . PHP_EOL;
-            }
-
-            $query = $union . $this->build();
-            
+            $query = $this->build();
             if (!$params) {
                 $params = $this->getBindValues();
             }
@@ -1904,14 +1923,7 @@ class Connection
     {
         $query = trim($query);
         if (empty($query)) {
-            
-            $union = '';
-            if (! empty($this->union)) {
-                $union = implode(PHP_EOL, $this->union) . PHP_EOL;
-            }
-
-            $query = $union . $this->build();
-            
+            $query = $this->build();
             if (!$params) {
                 $params = $this->getBindValues();
             }
@@ -1935,14 +1947,7 @@ class Connection
     {
         $query = trim($query);
         if (empty($query)) {
-            
-            $union = '';
-            if (! empty($this->union)) {
-                $union = implode(PHP_EOL, $this->union) . PHP_EOL;
-            }
-
-            $query = $union . $this->build();
-            
+            $query = $this->build();
             if (!$params) {
                 $params = $this->getBindValues();
             }
@@ -1984,12 +1989,13 @@ class Connection
             if (is_null($this->pdo)) { 
                 $this->connect(); 
             }
-            return $this->pdo->beginTransaction();
+            return @$this->pdo->beginTransaction();
         } catch (PDOException $e) {
             // 服务端断开时重连一次
             if ($e->errorInfo[1] == 2006 || $e->errorInfo[1] == 2013) {
                 $this->closeConnection();
                 $this->connect();
+                echo 'MySQL服务端断开时重连一次' . PHP_EOL;
                 return $this->pdo->beginTransaction();
             } else {
                 throw $e;
