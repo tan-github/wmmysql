@@ -1,5 +1,5 @@
 <?php
-namespace Workerman\MySQL;
+namespace Zsymv/WmMysql;
 
 use Exception;
 use PDO;
